@@ -3,6 +3,9 @@ from data.base_dataset import BaseDataset, get_transform
 from data.image_folder import make_dataset
 from PIL import Image
 import random
+import numpy as np
+import albumentations as A
+import torchvision.transforms as transforms
 
 
 class UnalignedDataset(BaseDataset):
@@ -33,8 +36,22 @@ class UnalignedDataset(BaseDataset):
         btoA = self.opt.direction == 'BtoA'
         input_nc = self.opt.output_nc if btoA else self.opt.input_nc       # get the number of channels of input image
         output_nc = self.opt.input_nc if btoA else self.opt.output_nc      # get the number of channels of output image
-        self.transform_A = get_transform(self.opt, grayscale=(input_nc == 1))
-        self.transform_B = get_transform(self.opt, grayscale=(output_nc == 1))
+        # self.transform_A = get_transform(self.opt, grayscale=(input_nc == 1))
+        # self.transform_B = get_transform(self.opt, grayscale=(output_nc == 1))
+        self.img_transform = A.Compose([
+            A.PadIfNeeded(min_height=opt.load_size, 
+                          min_width=opt.load_size, 
+                          border_mode=4, 
+                          always_apply=True),
+            A.Flip(p=0.5),
+            A.Transpose(p=0.5),
+            A.Rotate(limit=90, p=0.5),
+        ])
+        self.crop_transform = A.CropNonEmptyMaskIfExists(height=opt.crop_size, 
+                                                         width=opt.crop_size,
+                                                         always_apply=True)
+        self.tensor_transform = transforms.Compose([transforms.ToTensor(), 
+                                                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
     def __getitem__(self, index):
         """Return a data point and its metadata information.
@@ -56,9 +73,21 @@ class UnalignedDataset(BaseDataset):
         B_path = self.B_paths[index_B]
         A_img = Image.open(A_path).convert('RGB')
         B_img = Image.open(B_path).convert('RGB')
+        A_arr = np.array(A_img)
+        B_arr = np.array(B_img)
+        
         # apply image transformation
-        A = self.transform_A(A_img)
-        B = self.transform_B(B_img)
+        A_imt = self.img_transform(image=A_arr)['image']
+        B_imt = self.img_transform(image=B_arr)['image']
+
+        non_black_A = A_imt.sum(2) != 0
+        non_black_B = B_imt.sum(2) != 0 
+
+        A_cr = self.crop_transform(image=A_imt, mask=non_black_A)['image']
+        B_cr = self.crop_transform(image=B_imt, mask=non_black_B)['image']
+        
+        A = self.tensor_transform(A_cr)
+        B = self.tensor_transform(B_cr)
 
         return {'A': A, 'B': B, 'A_paths': A_path, 'B_paths': B_path}
 
